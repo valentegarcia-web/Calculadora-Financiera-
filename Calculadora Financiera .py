@@ -20,7 +20,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. VARIABLES DE SESIÓN ---
+# --- 2. VARIABLES DE SESIÓN (ESTADO GLOBAL) ---
 if 'instrumentos' not in st.session_state: st.session_state.instrumentos = []
 if 'monto_base' not in st.session_state: st.session_state.monto_base = 5000000.0
 if 'prestamo' not in st.session_state: st.session_state.prestamo = 2000000.0
@@ -54,16 +54,16 @@ def generar_df_propuesto(instrumentos, monto_base, total_prestamo):
     
     return df[cols]
 
-# === GENERACIÓN DE DATOS ANTES DE LAS PESTAÑAS (EVITA CRASH) ===
+# === GENERACIÓN DE DATOS ANTES DE LAS PESTAÑAS ===
 df_actual = generar_df_actual(st.session_state.instrumentos, st.session_state.monto_base)
 df_prop = generar_df_propuesto(st.session_state.instrumentos, st.session_state.monto_base, st.session_state.prestamo)
 
-# Lógica del Préstamo Real para encontrar el Mes Exacto
+# Lógica del Préstamo Real para el Resumen (Sincronizado)
 flujo_inversiones = df_prop['Nuevo Flujo Mensual'].sum() if not df_prop.empty else 0
 temp_saldo = st.session_state.prestamo
 mes_liquidacion = None
 
-for m in range(1, 1201): # Simula hasta 100 años para encontrar el mes
+for m in range(1, 1201): # Simulación matemática
     int_d = temp_saldo * ((st.session_state.tasa_prestamo/100)/12)
     cap_d = st.session_state.pago_mensual - int_d
     if cap_d <= 0 and temp_saldo > 0:
@@ -181,12 +181,12 @@ with t1:
     c1, c2 = st.columns([2, 1])
     cliente = c1.text_input("👤 Cliente:", value="Familia Demo")
     
-    st.session_state.monto_base = c2.number_input("💰 Escribe Monto Base sin comas:", min_value=0.0, value=st.session_state.monto_base, step=50000.0, format="%.2f")
+    # Nota: Uso 'key' para sincronizar la memoria automáticamente
+    c2.number_input("💰 Escribe Monto Base sin comas:", min_value=0.0, step=50000.0, format="%.2f", key="monto_base")
     c2.markdown(f"<div class='ayuda-dinero'>Monto Formateado: <b>${st.session_state.monto_base:,.2f}</b></div>", unsafe_allow_html=True)
     
     st.divider()
     
-    # PERFIL DE RIESGO Y BARRAS
     st.subheader("📊 Perfil de Riesgo Objetivo (%)")
     rp1, rp2, rp3 = st.columns(3)
     p_c = rp1.number_input("Conservador (C)", 0, 100, 40)
@@ -208,7 +208,6 @@ with t1:
 
     st.divider()
     
-    # BARRA DE DINERO RESTANTE
     total_asignado = sum(i['Monto (MXN)'] for i in st.session_state.instrumentos)
     falta_asignar = st.session_state.monto_base - total_asignado
     pct_asignado = min(total_asignado / st.session_state.monto_base, 1.0) if st.session_state.monto_base > 0 else 0
@@ -217,7 +216,6 @@ with t1:
     st.progress(pct_asignado)
     
     st.subheader("➕ Agregar Instrumento")
-    
     f1, f2, f3 = st.columns([1, 2, 2])
     cat = f1.selectbox("Categoría", ["Conservador", "Moderado", "Especulativo"])
     nombre = f2.text_input("Nombre (Ej. CETES)")
@@ -265,13 +263,13 @@ with t2:
     st.subheader("Estrategia de Crédito e Inyección")
     col1, col2, col3 = st.columns(3)
     
-    st.session_state.prestamo = col1.number_input("Monto del Préstamo sin comas ($)", value=st.session_state.prestamo, step=50000.0)
+    col1.number_input("Monto del Préstamo sin comas ($)", min_value=0.0, step=50000.0, key="prestamo")
     col1.markdown(f"<div class='ayuda-dinero'>Crédito: <b>${st.session_state.prestamo:,.2f}</b></div>", unsafe_allow_html=True)
     
-    st.session_state.pago_mensual = col2.number_input("Pago Mensual sin comas ($)", value=st.session_state.pago_mensual, step=1000.0)
+    col2.number_input("Pago Mensual sin comas ($)", min_value=0.0, step=1000.0, key="pago_mensual")
     col2.markdown(f"<div class='ayuda-dinero'>Pago: <b>${st.session_state.pago_mensual:,.2f}</b></div>", unsafe_allow_html=True)
     
-    st.session_state.tasa_prestamo = col3.number_input("Tasa Préstamo (% Anual)", value=st.session_state.tasa_prestamo, step=0.5, format="%.2f")
+    col3.number_input("Tasa Préstamo (% Anual)", min_value=0.0, step=0.5, format="%.2f", key="tasa_prestamo")
 
     if not st.session_state.instrumentos:
         st.warning("Agrega instrumentos en la pestaña 1 primero.")
@@ -282,12 +280,18 @@ with t2:
         total_inyeccion = sum(inst.get('Inyección', 0.0) for inst in st.session_state.instrumentos)
         falta_prestamo = st.session_state.prestamo - total_inyeccion
         pct_prestamo = min(total_inyeccion / st.session_state.prestamo, 1.0) if st.session_state.prestamo > 0 else 0
+        pct_falta = (falta_prestamo / st.session_state.prestamo) * 100 if st.session_state.prestamo > 0 else 0
         
-        color_falta = "green" if falta_prestamo == 0 else "red"
-        st.markdown(f"<div class='progress-text'>Préstamo asignado: ${total_inyeccion:,.2f} | <span style='color:{color_falta};'>Falta por asignar: ${falta_prestamo:,.2f}</span></div>", unsafe_allow_html=True)
-        st.progress(pct_prestamo)
-
         modo_iny = st.radio("Distribuir préstamo por:", ["Monto ($)", "Porcentaje (%)"], horizontal=True)
+
+        if modo_iny == "Porcentaje (%)":
+            texto_progreso = f"Falta por asignar: {pct_falta:.2f}% (${falta_prestamo:,.2f})"
+        else:
+            texto_progreso = f"Falta por asignar: ${falta_prestamo:,.2f}"
+
+        color_falta = "green" if falta_prestamo == 0 else "red"
+        st.markdown(f"<div class='progress-text'>Préstamo asignado: ${total_inyeccion:,.2f} | <span style='color:{color_falta};'>{texto_progreso}</span></div>", unsafe_allow_html=True)
+        st.progress(pct_prestamo)
 
         for idx, inst in enumerate(st.session_state.instrumentos):
             c_nom, c_in, c_res = st.columns([2, 2, 3])
@@ -302,7 +306,7 @@ with t2:
             else:
                 pct_actual = (actual_iny / st.session_state.prestamo) * 100 if st.session_state.prestamo > 0 else 0.0
                 max_pct = (max_monto / st.session_state.prestamo) * 100 if st.session_state.prestamo > 0 else 0.0
-                nuevo_pct = c_in.number_input("Inyectar (%)", min_value=0.0, max_value=float(max_pct), value=float(pct_actual), step=1.0, key=f"inypct_{idx}")
+                nuevo_pct = c_in.number_input("Inyectar (%)", min_value=0.0, max_value=float(max_pct), value=float(pct_actual), step=1.0, format="%.2f", key=f"inypct_{idx}")
                 nueva_inyeccion = (nuevo_pct / 100) * st.session_state.prestamo
                 c_in.markdown(f"<span style='color:#666;'>${nueva_inyeccion:,.2f}</span>", unsafe_allow_html=True)
             
@@ -317,7 +321,8 @@ with t2:
             st.write("### Vista Final del Portafolio Apalancado")
             st.dataframe(df_prop.style.format({
                 'Monto Anterior': '${:,.2f}', 'Inyección Préstamo': '${:,.2f}', 'Nuevo Saldo': '${:,.2f}', 
-                '% Nuevo Portafolio': '{:.2f}%', 'Tasa Anual %': '{:.2f}%', 'Flujo Extra Mensual': '${:,.2f}', 'Nuevo Flujo Mensual': '${:,.2f}'
+                '% Nuevo Portafolio': '{:.2f}%', 'Tasa Anual %': '{:.2f}%', 'Flujo Extra Mensual': '${:,.2f}', 
+                'Nuevo Flujo Mensual': '${:,.2f}', 'Nuevo Flujo Anual': '${:,.2f}'
             }), use_container_width=True)
 
 # ----------------- PESTAÑA 3: FLUJOS -----------------
@@ -337,8 +342,6 @@ with t3:
         datos_flujo.append({"Mes": int(m), "Flujo Positivo (Inv)": flujo_inversiones, "Flujo Negativo (Deuda)": st.session_state.pago_mensual if saldo_deuda>0 else 0, "Flujo Neto": f_neto, "Deuda Restante": saldo_deuda})
             
     df_flujo = pd.DataFrame(datos_flujo)
-    
-    # Formato específico: Mes no lleva signo de pesos, el resto sí.
     formato_flujo = {'Mes': '{:d}', 'Flujo Positivo (Inv)': '${:,.2f}', 'Flujo Negativo (Deuda)': '${:,.2f}', 'Flujo Neto': '${:,.2f}', 'Deuda Restante': '${:,.2f}'}
     
     st.write(texto_resumen)
@@ -371,7 +374,10 @@ with t4:
 # ----------------- PESTAÑA 5: EXPORTACIÓN -----------------
 with t5:
     st.subheader("📥 Exportar Documentos")
-    seleccion = st.multiselect("Módulos:", ["Resumen Ejecutivo", "Portafolio Actual", "Portafolio Propuesto", "Desglose de Flujos"], default=["Resumen Ejecutivo", "Portafolio Propuesto", "Desglose de Flujos"])
+    opciones_descarga = ["Resumen Ejecutivo", "Portafolio Actual", "Portafolio Propuesto", "Desglose de Flujos"]
+    
+    # Todos los módulos seleccionados por defecto para que solo desmarquen
+    seleccion = st.multiselect("Selecciona los módulos a incluir en tu descarga:", opciones_descarga, default=opciones_descarga)
     
     st.divider()
     c_btn1, c_btn2 = st.columns(2)
@@ -383,4 +389,4 @@ with t5:
             excel_data = generar_excel_custom(seleccion, df_actual, df_prop, df_flujo if "Desglose de Flujos" in seleccion else pd.DataFrame())
             st.download_button("📊 Excel de Datos", excel_data, f"Confidelis_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     else:
-        st.warning("⚠️ Asegúrate de tener instrumentos registrados para descargar.")
+        st.warning("⚠️ Asegúrate de tener instrumentos registrados y al menos una opción seleccionada.")
