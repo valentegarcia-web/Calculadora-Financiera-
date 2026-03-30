@@ -209,4 +209,134 @@ with t1:
         monto_final = (valor_capturado / 100) * st.session_state.monto_base
         m_col2.info(f"Equivale a **${monto_final:,.2f} MXN**.")
         
-    horizonte = m_col3.selectbox("Horizonte", ["1 Año",
+    horizonte = m_col3.selectbox("Horizonte", ["1 Año", "3 Años", "5 Años", "10 Años"])
+    liquidez = st.selectbox("Liquidez", ["Diaria", "Mensual", "Anual", "Al Vencimiento"])
+
+    if st.button("💾 Guardar Instrumento"):
+        if monto_final > 0:
+            st.session_state.instrumentos.append({
+                "Categoría": cat[0], "Instrumento": nombre, "Monto (MXN)": monto_final, 
+                "Tasa Anual %": tasa, "Horizonte": horizonte, "Liquidez": liquidez, "Inyección": 0.0
+            })
+            st.rerun()
+        else:
+            st.error("El monto o porcentaje debe ser mayor a 0.")
+
+    if st.session_state.instrumentos:
+        st.write("### 🗂️ Instrumentos Activos")
+        for i, inst in enumerate(st.session_state.instrumentos):
+            c_inf, c_btn = st.columns([6, 1])
+            c_inf.markdown(f"**{inst['Categoría']}** | {inst['Instrumento']} | Monto: **${inst['Monto (MXN)']:,.2f}** | Rendimiento: **{inst['Tasa Anual %']}%**")
+            if c_btn.button("❌ Borrar", key=f"del_{i}"):
+                st.session_state.instrumentos.pop(i)
+                st.rerun()
+
+    df_actual = generar_df_actual(st.session_state.instrumentos, st.session_state.monto_base)
+    if not df_actual.empty:
+        st.dataframe(df_actual.style.format({'% Asignación': '{:.2f}%', 'Monto (MXN)': '${:,.2f}', 'Flujo Mensual': '${:,.2f}', 'Flujo Anual': '${:,.2f}', 'Tasa Anual %': '{:.2f}%'}), use_container_width=True)
+
+# ----------------- PESTAÑA 2: APALANCAMIENTO -----------------
+with t2:
+    st.subheader("Estrategia de Crédito e Inyección")
+    col1, col2, col3 = st.columns(3)
+    st.session_state.prestamo = col1.number_input("Monto del Préstamo Autorizado ($)", value=st.session_state.prestamo, step=50000.0, format="%.2f")
+    pago_mensual = col2.number_input("Pago Mensual Estimado ($)", value=45000.0, step=1000.0, format="%.2f")
+    tasa_prestamo = col3.number_input("Tasa Préstamo (% Anual)", value=12.0, step=0.5, format="%.2f")
+
+    if not st.session_state.instrumentos:
+        st.warning("Agrega instrumentos en la pestaña 1 primero para poder inyectarles capital.")
+    else:
+        st.divider()
+        st.write("### 💸 Distribuir el Préstamo en los Instrumentos")
+        
+        total_inyeccion = sum(inst.get('Inyección', 0.0) for inst in st.session_state.instrumentos)
+        falta_prestamo = st.session_state.prestamo - total_inyeccion
+        pct_prestamo = min(total_inyeccion / st.session_state.prestamo, 1.0) if st.session_state.prestamo > 0 else 0
+        
+        color_falta = "green" if falta_prestamo == 0 else "red"
+        st.markdown(f"<div class='progress-text'>Préstamo asignado: ${total_inyeccion:,.2f} | <span style='color:{color_falta};'>Falta por asignar: ${falta_prestamo:,.2f}</span></div>", unsafe_allow_html=True)
+        st.progress(pct_prestamo)
+
+        for idx, inst in enumerate(st.session_state.instrumentos):
+            c_nom, c_in, c_res = st.columns([2, 2, 3])
+            c_nom.markdown(f"<br>👉 **{inst['Instrumento']}**<br>Saldo actual: ${inst['Monto (MXN)']:,.0f}", unsafe_allow_html=True)
+            
+            nueva_inyeccion = c_in.number_input(f"Inyectar Capital ($)", min_value=0.0, max_value=float(inst.get('Inyección', 0.0) + falta_prestamo), value=float(inst.get('Inyección', 0.0)), step=10000.0, format="%.2f", key=f"iny_{idx}")
+            
+            if nueva_inyeccion != inst.get('Inyección', 0.0):
+                st.session_state.instrumentos[idx]['Inyección'] = nueva_inyeccion
+                st.rerun()
+                
+            flujo_extra = (nueva_inyeccion * (inst['Tasa Anual %']/100)) / 12
+            c_res.info(f"**Nuevo Saldo:** ${(inst['Monto (MXN)'] + nueva_inyeccion):,.2f} | **Flujo Extra:** +${flujo_extra:,.2f}/mes")
+
+        df_prop = generar_df_propuesto(st.session_state.instrumentos, st.session_state.monto_base, st.session_state.prestamo)
+        st.write("### Vista Final del Portafolio Apalancado")
+        st.dataframe(df_prop.style.format({
+            'Monto Anterior': '${:,.2f}', 'Inyección Préstamo': '${:,.2f}', 'Nuevo Saldo': '${:,.2f}', 
+            '% Nuevo Portafolio': '{:.2f}%', 'Tasa Anual %': '{:.2f}%', 'Flujo Extra Mensual': '${:,.2f}', 'Nuevo Flujo Mensual': '${:,.2f}'
+        }), use_container_width=True)
+
+# ----------------- PESTAÑA 3: FLUJOS -----------------
+with t3:
+    st.subheader("Proyección de Amortización y Flujos")
+    plazo_meses = st.number_input("Meses a proyectar", min_value=12, max_value=360, value=60, step=12)
+    
+    flujo_inversiones = df_prop['Nuevo Flujo Mensual'].sum() if 'df_prop' in locals() and not df_prop.empty else 0
+    datos_flujo = []
+    saldo_deuda = st.session_state.prestamo
+    mes_liquidacion = None
+    
+    for m in range(1, int(plazo_meses) + 1):
+        int_d = saldo_deuda * ((tasa_prestamo/100)/12)
+        cap_d = pago_mensual - int_d
+        saldo_deuda = max(0, saldo_deuda - cap_d)
+        f_neto = flujo_inversiones - pago_mensual if saldo_deuda > 0 else flujo_inversiones
+        if saldo_deuda <= 0 and mes_liquidacion is None: mes_liquidacion = m
+        datos_flujo.append({"Mes": m, "Flujo Positivo (Inv)": flujo_inversiones, "Flujo Negativo (Deuda)": pago_mensual if saldo_deuda>0 else 0, "Flujo Neto": f_neto, "Deuda Restante": saldo_deuda})
+            
+    df_flujo = pd.DataFrame(datos_flujo)
+    fecha_fin = (datetime.now() + timedelta(days=(mes_liquidacion or 0)*30)).strftime("%B %Y") if mes_liquidacion else "Fuera del plazo proyectado"
+    mes_txt = f"en el Mes {mes_liquidacion} ({fecha_fin})" if mes_liquidacion else "aún con saldo pendiente al finalizar"
+    texto_resumen = f"El portafolio total será de ${(st.session_state.monto_base + st.session_state.prestamo):,.2f}. Generará flujos mensuales de ${flujo_inversiones:,.2f}. El crédito quedará liquidado {mes_txt}."
+    
+    st.dataframe(df_flujo.style.format("${:,.2f}"), use_container_width=True)
+
+# ----------------- PESTAÑA 4: RESUMEN GENERAL -----------------
+with t4:
+    st.subheader("📊 Dashboard Directivo")
+    if 'df_prop' not in locals() or df_prop.empty:
+        st.warning("Completa la distribución para ver el resumen.")
+    else:
+        st.markdown(f"<div class='resumen-card'><h4>💡 Resumen:</h4><p>{texto_resumen}</p></div><br>", unsafe_allow_html=True)
+        m1, m2, m3 = st.columns(3)
+        m1.markdown(f"<div class='metric-box'>Capital Base<br><h2>${st.session_state.monto_base:,.0f}</h2></div>", unsafe_allow_html=True)
+        m2.markdown(f"<div class='metric-box'>Préstamo Inyectado<br><h2>${total_inyeccion:,.0f}</h2></div>", unsafe_allow_html=True)
+        m3.markdown(f"<div class='metric-box'>Portafolio Activo<br><h2>${(st.session_state.monto_base + total_inyeccion):,.0f}</h2></div>", unsafe_allow_html=True)
+        
+        st.write("")
+        m4, m5, m6 = st.columns(3)
+        rendimiento_promedio = (df_prop['Nuevo Flujo Anual'].sum() / (st.session_state.monto_base + total_inyeccion)) * 100 if (st.session_state.monto_base + total_inyeccion) > 0 else 0
+        m4.markdown(f"<div class='metric-box'>Rendimiento Ponderado<br><h2>{rendimiento_promedio:.2f}%</h2></div>", unsafe_allow_html=True)
+        m5.markdown(f"<div class='metric-box'>Flujo Total Generado<br><h2>${flujo_inversiones:,.0f}/mes</h2></div>", unsafe_allow_html=True)
+        
+        flujo_libre = flujo_inversiones - pago_mensual
+        c_flujo = "#006400" if flujo_libre > 0 else "#8B0000"
+        m6.markdown(f"<div class='metric-box'>Flujo Neto (Durante Deuda)<br><h2 style='color:{c_flujo};'>${flujo_libre:,.0f}</h2></div>", unsafe_allow_html=True)
+
+# ----------------- PESTAÑA 5: EXPORTACIÓN -----------------
+with t5:
+    st.subheader("📥 Exportar Documentos")
+    seleccion = st.multiselect("Módulos:", ["Resumen Ejecutivo", "Portafolio Actual", "Portafolio Propuesto", "Desglose de Flujos"], default=["Resumen Ejecutivo", "Portafolio Propuesto", "Desglose de Flujos"])
+    
+    st.divider()
+    c_btn1, c_btn2 = st.columns(2)
+    if len(seleccion) > 0 and 'df_actual' in locals() and not df_actual.empty:
+        with c_btn1:
+            pdf_data = generar_pdf_custom(cliente, seleccion, df_actual, df_prop, df_flujo, texto_resumen)
+            st.download_button("📄 PDF Oficial", pdf_data, f"Confidelis_{cliente}.pdf", "application/pdf")
+        with c_btn2:
+            excel_data = generar_excel_custom(seleccion, df_actual, df_prop, df_flujo)
+            st.download_button("📊 Excel de Datos", excel_data, f"Confidelis_{cliente}.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    else:
+        st.warning("⚠️ Asegúrate de tener instrumentos registrados para descargar.")
